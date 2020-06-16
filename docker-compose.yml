@@ -1,0 +1,329 @@
+version: '3.7'
+networks:
+  traefik:
+    external:
+      name: traefik
+services:
+# Traefik 2 - Reverse Proxy
+  traefik:
+    container_name: traefik
+    image: 'traefik:chevrotin'
+    restart: unless-stopped
+    command:
+      - '--global.checkNewVersion=true'
+      - '--global.sendAnonymousUsage=false'
+      - '--entryPoints.http.address=:80'
+      - '--api=true'
+      - '--api.insecure=true'
+      - '--log=true'
+      - '--log.level=INFO' # (Default: error) DEBUG, INFO, WARN, ERROR, FATAL, PANIC
+      - '--accessLog=true'
+      - '--accessLog.filePath=/traefik.log'
+      - '--accessLog.bufferingSize=100'
+      - '--accessLog.filters.statusCodes=400-499'
+      - '--providers.docker=true'
+      - '--providers.docker.endpoint=unix:///var/run/docker.sock'
+      - >-
+        --providers.docker.defaultrule=Host(`{{ index .Labels
+        "com.docker.compose.service" }}.$LAN`)
+      - '--providers.docker.exposedByDefault=false'
+      - '--providers.docker.network=traefik'
+      - '--providers.docker.swarmMode=false'
+      - '--providers.file.directory=/rules'
+      - '--providers.file.watch=true'
+    networks:
+      - traefik
+    ports:
+      - target: 80
+        published: 80
+        protocol: tcp
+        mode: host
+    volumes:
+      - '$USERDIR/docker/traefik2/rules:/rules'
+      - '/var/run/docker.sock:/var/run/docker.sock:ro'
+      - '$USERDIR/docker/traefik2/traefik.log:/traefik.log'
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.traefik-rtr.entrypoints=http
+      - traefik.http.routers.traefik-rtr.rule=Host(`traefik.$LAN`)
+      - traefik.http.routers.traefik-rtr.service=api@internal
+# Wireguard - VPN
+  wireguard-vpn:
+    image: linuxserver/wireguard
+    container_name: wireguard
+    networks:
+      - traefik
+    ports:
+      - '9091:9091'
+      - '9117:9117'
+      - '6789:6789'
+      - '34400:34400'
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    environment:
+      - PUID=$PUID
+      - PGID=$PGID
+      - TZ=$TZ
+    volumes:
+      - '$USERDIR/docker/wireguard:/config'
+      - '/lib/modules:/lib/modules'
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+    restart: unless-stopped
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.transmission-rtr.entrypoints=http
+      - traefik.http.routers.transmission-rtr.rule=Host(`transmission.$LAN`)
+      - traefik.http.routers.jackett-rtr.entrypoints=http
+      - traefik.http.routers.jackett-rtr.rule=Host(`jackett.$LAN`)
+      - traefik.http.routers.nzbget-rtr.entrypoints=http
+      - traefik.http.routers.nzbget-rtr.rule=Host(`nzbget.$LAN`)
+      - traefik.http.routers.xteve-rtr.entrypoints=http
+      - traefik.http.routers.xteve-rtr.rule=Host(`xteve.$LAN`)
+      - traefik.http.routers.transmission-rtr.service=transmission-svc
+      - traefik.http.services.transmission-svc.loadbalancer.server.port=9091
+      - traefik.http.routers.jackett-rtr.service=jackett-svc
+      - traefik.http.services.jackett-svc.loadbalancer.server.port=9117
+      - traefik.http.routers.nzbget-rtr.service=nzbget-svc
+      - traefik.http.services.nzbget-svc.loadbalancer.server.port=6789
+      - traefik.http.routers.xteve-rtr.service=xteve-svc
+      - traefik.http.services.xteve-svc.loadbalancer.server.port=34400
+# AdGuard dns level ad blocking
+  Adguard:
+    image: adguard/adguardhome
+    container_name: adguard
+    networks:
+      - traefik
+    volumes:
+      - '$USERDIR/docker/adguard/workdir:/opt/adguardhome/work'
+      - '$USERDIR/docker/adguard/confdir:/opt/adguardhome/conf'
+    restart: unless-stopped
+    ports:
+      - '53:53/tcp'
+      - '53:53/udp'
+      - '3000:3000' # comment out after dns rewrites configured
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.adguard-rtr.entrypoints=http
+      - traefik.http.routers.adguard-rtr.rule=Host(`adguard.$LAN`)
+      - traefik.http.routers.adguard-rtr.service=adguard-svc
+      - traefik.http.services.adguard-svc.loadbalancer.server.port=3000
+# Portainer front end docker management gui
+  portainer:
+    image: portainer/portainer
+    container_name: portainer
+    networks:
+      - traefik
+    volumes:
+      - '$USERDIR/docker/portainer:/data'
+      - '/var/run/docker.sock:/var/run/docker.sock'
+    restart: unless-stopped
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.portainer-rtr.entrypoints=http
+      - traefik.http.routers.portainer-rtr.rule=Host(`portainer.$LAN`)
+      - traefik.http.routers.portainer-rtr.service=portainer-svc
+      - traefik.http.services.portainer-svc.loadbalancer.server.port=9000
+# Organizr is a HTPC/Homelab Services Organizer
+  organizr:
+    image: linuxserver/organizr
+    container_name: organizr
+    environment:
+      - PUID=$PUID
+      - PGID=$PGID
+      - TZ=$TZ
+    volumes:
+      - '$USERDIR/docker/organizr:/config'
+    networks:
+      - traefik
+    restart: unless-stopped
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.organizr-rtr.entrypoints=http
+      - traefik.http.routers.organizr-rtr.rule=Host(`$LAN`)
+      - traefik.http.routers.organizr-rtr.service=organizr-svc
+      - traefik.http.services.organizr-svc.loadbalancer.server.port=80
+# Plex media server
+  plex:
+    image: linuxserver/plex
+    container_name: plex
+    environment:
+      - PUID=$PUID
+      - PGID=$PGID
+      - VERSION=latest
+    devices:
+      - '/dev/dri/card0:/dev/dri/card0' # Required for HW accelerated transcoding
+      - '/dev/dri/renderD128:/dev/dri/renderD128' # Required for HW accelerated transcoding
+    volumes:
+      - '$USERDIR/docker/plex/:/config'
+      - '/dev/shm:/transcode' # Enables RAM as transcode directory
+      - '/path/to/TV:/tv'
+      - '/path/to/Movies:/movies'
+    ports:
+      - '32400:32400'
+    restart: unless-stopped
+# Tautulli media server stats
+  tautulli:
+    image: linuxserver/tautulli
+    container_name: tautulli
+    environment:
+      - PUID=$PUID
+      - PGID=$PGID
+      - TZ=$TZ
+    networks:
+      - traefik
+    volumes:
+      - '$USERDIR/docker/tautulli:/config'
+      - >-
+        $USERDIR/docker/plex/Library/Application Support/Plex Media
+        Server/Logs:/logs
+    restart: unless-stopped
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.tautulli-rtr.entrypoints=http
+      - traefik.http.routers.tautulli-rtr.rule=Host(`tautulli.$LAN`)
+      - traefik.http.routers.tautulli-rtr.service=tautulli-svc
+      - traefik.http.services.tautulli-svc.loadbalancer.server.port=8181
+# Ombi request engine
+  ombi:
+    image: linuxserver/ombi
+    container_name: ombi
+    environment:
+      - PUID=$PUID
+      - PGID=$PGID
+      - TZ=$TZ
+    networks:
+      - traefik
+    volumes:
+      - '$USERDIR/docker/ombi/:/config'
+    ports:
+      - '3579:3579'
+    restart: unless-stopped
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.ombi-rtr.entrypoints=http
+      - traefik.http.routers.ombi-rtr.rule=Host(`ombi.$LAN`)
+      - traefik.http.routers.ombi-rtr.service=ombi-svc
+      - traefik.http.services.ombi-svc.loadbalancer.server.port=3579
+# Sonarr TV series automation
+  sonarr:
+    image: 'linuxserver/sonarr:preview'
+    container_name: sonarr
+    volumes:
+      - '$USERDIR/docker/sonarr/config:/config'
+      - '/path/to/Downloads:/downloads'
+      - '/path/to/TV:/tv'
+    environment:
+      - PUID=$PUID
+      - PGID=$PGID
+      - TZ=$TZ
+    networks:
+      - traefik
+    restart: unless-stopped
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.sonarr-rtr.entrypoints=http
+      - traefik.http.routers.sonarr-rtr.rule=Host(`sonarr.$LAN`)
+      - traefik.http.routers.sonarr-rtr.service=sonarr-svc
+      - traefik.http.services.sonarr-svc.loadbalancer.server.port=8989
+# Radarr Movie automation
+  radarr:
+    image: linuxserver/radarr
+    container_name: radarr
+    volumes:
+      - '$USERDIR/docker/radarr/config:/config'
+      - '/path/to/Downloads:/downloads'
+      - '/path/to/Movies:/movies'
+    environment:
+      - PUID=$PUID
+      - PGID=$PGID
+      - TZ=$TZ
+    networks:
+      - traefik
+    restart: unless-stopped
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.radarr-rtr.entrypoints=http
+      - traefik.http.routers.radarr-rtr.rule=Host(`radarr.$LAN`)
+      - traefik.http.routers.radarr-rtr.service=radarr-svc
+      - traefik.http.services.radarr-svc.loadbalancer.server.port=7878
+# Jackett API Support for your favorite torrent trackers.
+  jackett:
+    image: linuxserver/jackett
+    container_name: jackett
+    depends_on:
+      - wireguard-vpn
+    environment:
+      - PUID=$PUID
+      - PGID=$PGID
+      - TZ=$TZ
+    volumes:
+      - '$USERDIR/docker/jackett:/config'
+      - '/path/to/torrents:/downloads'
+    network_mode: 'service:wireguard-vpn'
+    restart: unless-stopped
+# Nzbget newsgroup downloader
+  nzbget:
+    image: linuxserver/nzbget
+    container_name: nzbget
+    depends_on:
+      - wireguard-vpn
+    volumes:
+      - '$USERDIR/docker/nzbget/config:/config'
+      - '/path/to/Downloads:/downloads'
+      - '$USERDIR/docker/nzbget/downloads:/tmp-downloads'
+    environment:
+      - PUID=$PUID
+      - PGID=$PGID
+      - TZ=$TZ
+    network_mode: 'service:wireguard-vpn'
+    restart: unless-stopped
+# Transmission torrent client
+  transmission:
+    image: linuxserver/transmission
+    container_name: transmission
+    depends_on:
+      - wireguard-vpn
+    environment:
+      - PUID=$PUID
+      - PGID=$PGID
+      - TZ=$TZ
+      - USER=$USER
+      - PASS=$PASS
+      - TRANSMISSION_WEB_HOME=/kettu/
+    volumes:
+      - '$USERDIR/docker/transmission:/config'
+      - '/path/to/Downloads:/downloads'
+      - '/path/to/torrents:/watch'
+    network_mode: 'service:wireguard-vpn'
+    restart: unless-stopped
+# Handbrake media encoder
+  handbrake:
+    image: jlesage/handbrake
+    container_name: handbrake
+    volumes:
+      - '$USERDIR/docker/handbrake:/config'
+      - '/path/to/conversions/:/storage'
+      - '/path/to/conversions/input:/watch'
+      - '/path/to/conversions/complete:/output'
+    networks:
+      - traefik
+    restart: unless-stopped
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.handbrake-rtr.entrypoints=http
+      - traefik.http.routers.handbrake-rtr.rule=Host(`handbrake.$LAN`)
+      - traefik.http.routers.handbrake-rtr.service=handbrake-svc
+      - traefik.http.services.handbrake-svc.loadbalancer.server.port=5800
+# Xteve PMS m3u IPTV proxy
+  xteve:
+    container_name: xteve
+    image: dnsforge/xteve
+    depends_on:
+      - wireguard-vpn
+    volumes:
+      - '$USERDIR/docker/xteve:/home/xteve/conf'
+      - '$USERDIR/docker/xteve/tmp:/tmp/xteve'
+    network_mode: 'service:wireguard-vpn'
+    restart: unless-stopped
